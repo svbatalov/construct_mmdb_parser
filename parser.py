@@ -1,5 +1,6 @@
 import construct as c
 import mmap
+import argparse
 
 """
 https://maxmind.github.io/MaxMind-DB/
@@ -32,6 +33,7 @@ class MMDB:
                 b"\xab\xcd\xefMaxMind.com"
             ])
             print(f"Data section offset {self.ds_offset}\nMetadata section offset: {self.ms_offset}")
+            print(f"Data section size {self.ms_offset - self.ds_offset - len(self.dss)} bytes")
 
         def ext_type(this):
             if this.type1 == 0 and this.ext_type:
@@ -101,7 +103,6 @@ class MMDB:
                     raise c.ConstructError()
         else:
             def f(obj, _):
-                print("HERE", obj)
                 if obj.type != vals:
                     raise c.ConstructError()
         return f
@@ -120,7 +121,7 @@ class MMDB:
             c.GreedyRange(
                 self.DataEntry #* self.printobj
             ),
-            c.Probe(lookahead=10)
+            # c.Probe(lookahead=10)
         ).parse_file(self.file)
 
     def printobj(self, obj, ctx):
@@ -166,10 +167,22 @@ class MMDB:
 # print(search_string_offset_in_file("/tmp/anycast_ranges_only.mmdb", [b"\x00"*16, b"\xab\xcd\xefMaxMind.com"]))
 
 
-m = MMDB(file="/tmp/anycast_ranges_only.mmdb")
-# m = MMDB(file="/tmp/anycast_v4.mmdb")
+# m = MMDB(file="/tmp/anycast_ranges_only.mmdb")
+# t = m.tree().parse_file("/tmp/anycast_ranges_only.mmdb")
+
+parser = argparse.ArgumentParser()
+parser.add_argument('file', nargs='?')
+args = parser.parse_args()
+print(args)
+
+m = MMDB(file=args.file)
 meta = m.metadata()
 print(meta)
-# print(meta.search("node_count"))
 
-# t = m.tree().parse_file("/tmp/anycast_ranges_only.mmdb")
+# print("node_count", meta.search("node_count"))
+
+d = c.Sequence(
+    c.Seek(m.ds_offset + len(m.dss)),
+    m.DataEntry
+).parse_file(m.file)
+print(d)
