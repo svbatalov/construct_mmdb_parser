@@ -1,3 +1,4 @@
+from os import walk
 import construct as c
 import mmap
 import argparse
@@ -59,17 +60,37 @@ Ctrl = c.BitStruct(
 )
 
 ## Returns a pointer parser with respect to a given data/metadata section offset
-def pointer(data_offset):
+def Pointer(data_offset):
     return c.Struct(
-        "ctrl" / Ctrl, # * check_type(1),
-        c.Check(c.this.ctrl.type == 1),
-        "value" / c.Pointer(c.this.ctrl.len + data_offset, c.LazyBound(lambda: DataEntry)),
+        "pointer" / c.BitStruct(
+            "type" / c.BitsInteger(3),
+            c.Check(c.this.type == 1),
+            "size" / c.BitsInteger(2),
+            "value1" / c.BitsInteger(3),
+            "value2" / c.BitsInteger((c.this.size+1) * 8),
+            "offset" / c.Computed(c.this.value2 + (c.this.value1 << (c.this.size+1)*8)),
+        ),
+        # Seeking inside of BitStruct is not supported
+        "value" / c.Pointer(c.this.pointer.offset + data_offset, c.LazyBound(lambda: DataEntry(data_offset))),
     )
+
 
 Str = c.Struct(
     "ctrl" / Ctrl, # * check_type(2),
     c.Check(c.this.ctrl.type == 2),
     "value" / c.PaddedString(c.this.ctrl.len, "utf8"),
+)
+
+Double = c.Struct(
+    "ctrl" / Ctrl,
+    c.Check(c.this.ctrl.type == 3),
+    "value" / c.Double,
+)
+
+Bytes = c.Struct(
+    "ctrl" / Ctrl,
+    c.Check(c.this.ctrl.type == 4),
+    "value" / c.Bytes(c.this.ctrl.len),
 )
 
 Int = (c.Struct(
@@ -78,26 +99,61 @@ Int = (c.Struct(
     "value" / c.BytesInteger(c.this.ctrl.len),
 ))
 
-Arr = c.Struct(
-    "ctrl" / Ctrl, # * check_type(11),
-    c.Check(c.this.ctrl.type == 11),
-    "value" / c.LazyBound(lambda: DataEntry),
-    # c.Probe(lookahead=10)
+def Arr(offset):
+    return c.Struct(
+        "ctrl" / Ctrl, # * check_type(11),
+        c.Check(c.this.ctrl.type == 11),
+        "value" / c.Array(
+            c.this.ctrl.len,
+            c.LazyBound(lambda: DataEntry(offset)),
+        )
+        # c.Probe(lookahead=10)
+    )
+
+Cache = c.Struct(
+    "ctrl" / Ctrl,
+    c.Check(c.this.ctrl.type == 12),
 )
 
-Map = c.Struct(
-    "ctrl" / Ctrl, # * check_type([7]),
-    c.Check(c.this.ctrl.type == 7),
-    "map_key" / Str,
-    "map_value" / c.LazyBound(lambda: DataEntry),
+End = c.Struct(
+    "ctrl" / Ctrl,
+    c.Check(c.this.ctrl.type == 13),
 )
 
-DataEntry = c.Select(
-    Str,
-    Int,
-    Arr,
-    Map,
+Bool = c.Struct(
+    "ctrl" / Ctrl,
+    c.Check(c.this.ctrl.type == 14),
+    "value" / c.Computed(c.this.ctrl.len)
 )
+
+def Map(offset):
+    return c.Struct(
+        "ctrl" / Ctrl,
+        c.Check(c.this.ctrl.type == 7),
+        "value" / c.Array(
+            c.this.ctrl.len,
+            c.Struct(
+                # The spec says that keys are always UTF8 strings,
+                # but in practice they can be pointers
+                "map_key" / c.LazyBound(lambda: DataEntry(offset)),
+                "map_value" / c.LazyBound(lambda: DataEntry(offset)),
+            )
+        )
+    )
+
+def DataEntry(offset):
+    return c.Select(
+        Str,
+        Double,
+        Bytes,
+        Int,
+        Arr(offset),
+        Map(offset),
+        Cache,
+        End,
+        Bool,
+        Pointer(offset),
+    )
 
 class MMDB:
     def __init__(self, record_size=32, file=None):
@@ -110,23 +166,19 @@ class MMDB:
         self.file = file
 
         self.find_section_offsets()
-        print(f"Data section offset {self.ds_offset}\nMetadata section offset: {self.ms_offset}")
+        self.data_start = self.ds_offset + len(self.dss)
+        self.metadata_start = self.ms_offset + len(self.mss)
         data_size = self.ms_offset - self.ds_offset - len(self.dss)
+
+        print(f"Data section offset {self.ds_offset} (data start at {self.data_start})\nMetadata section offset: {self.ms_offset}")
         print(f"Data section size {data_size} bytes ({data_size / 1e6} MB)")
 
     def metadata(self):
-        # print(self.DataEntry.parse(b"\x43abc"))
-        # print(self.DataEntry.build(u"abc"))
-
-        # print(self.DataEntry.parse(b"\xa1\x02"))
-        # print(self.DataEntry.build(2))
-
-        # print(self.DataEntry.parse(b""))
-
+        Entry = DataEntry(self.metadata_start)
         return c.Sequence(
-            c.Seek(self.ms_offset + len(self.mss)),
+            c.Seek(self.metadata_start),
             c.GreedyRange(
-                DataEntry #* self.printobj()
+                Entry #* self.printobj()
             ),
         )
 
@@ -142,7 +194,7 @@ class MMDB:
             # if obj.left > 11889298:
             #     raise c.CancelParsing
 
-            if limit and ctx and ctx._index and ctx._index > limit:
+            if limit and ctx and ctx._index and ctx._index >= limit:
                 raise c.CancelParsing
         return func
 
@@ -169,29 +221,17 @@ class MMDB:
         ])
 
     def data(self, limit=None, show=False, discard=False):
+        Entry = DataEntry(self.data_start)
         return c.Sequence(
-            c.Seek(self.ds_offset + len(self.dss)),
-            DataEntry,
-            c.Probe(lookahead=10),
-            c.HexDump(c.GreedyBytes),
-            # c.GreedyRange(
-            #     DataEntry * self.printobj(limit=limit, show=show),
-            #     discard=discard
-            # ),
-            c.Probe(lookahead=10, into=c.this)
+            c.Seek(self.data_start),
+            c.GreedyRange(
+                Entry * self.printobj(limit=limit, show=show),
+                discard=discard
+            ),
         )
     
     def read_data(self, limit=None, show=False):
         return self.data(limit=limit, show=show).parse_file(m.file)
-
-# MMDB(file="/tmp/anycast_ranges_only.mmdb").tree()
-
-# r = c.Struct(
-#     "tree" / MMDB().tree(discard=True),
-#     "dss" / c.Const(b"DSS"),
-#     "data" / c.GreedyBytes
-# ).parse(b"\x00\x00\x00\x01\x00\xb5\x6a\x92\x00\x00\x00\x01\x00\xb5\x6a\x92\x00\x00\x00\x01\x00\xb5\x6a\x92DSSsome data")
-# # ).parse_file("/tmp/anycast_ranges_only.mmdb")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -200,10 +240,11 @@ if __name__ == "__main__":
     print(args)
 
     m = MMDB(file=args.file)
-    meta = m.read_metadata()
-    print(meta)
+
+    # meta = m.read_metadata()
+    # print(meta)
 
     # print("node_count", meta.search("node_count"))
 
-    d = m.read_data(limit=10)
+    d = m.read_data(limit=3)
     print(d)
