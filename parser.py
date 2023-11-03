@@ -156,8 +156,7 @@ def DataEntry(offset):
     )
 
 class MMDB:
-    def __init__(self, record_size=32, file=None):
-        self.rs = record_size
+    def __init__(self, file=None):
         self.dss = b"\x00"*16
         self.mss = b"\xab\xcd\xefMaxMind.com"
 
@@ -170,8 +169,10 @@ class MMDB:
         self.metadata_start = self.ms_offset + len(self.mss)
         data_size = self.ms_offset - self.ds_offset - len(self.dss)
 
-        print(f"Data section offset {self.ds_offset} (data start at {self.data_start})\nMetadata section offset: {self.ms_offset}")
+        print(f"Data section offset {self.ds_offset} (data starts at {self.data_start})")
+        print(f"Metadata section offset: {self.ms_offset} (metadata starts at {self.metadata_start})")
         print(f"Data section size {data_size} bytes ({data_size / 1e6} MB)")
+        self.read_metadata()
 
     def metadata(self):
         Entry = DataEntry(self.metadata_start)
@@ -184,6 +185,9 @@ class MMDB:
 
     def read_metadata(self):
         self.meta = self.metadata().parse_file(self.file)
+        values = self.meta.search_all("value")
+        self.rs = values[values.index("record_size")+1]
+        print(f"Record size: {self.rs}")
         return self.meta
 
     def printobj(self, limit=None, show=True):
@@ -241,10 +245,7 @@ if __name__ == "__main__":
 
     m = MMDB(file=args.file)
 
-    # meta = m.read_metadata()
-    # print(meta)
-
-    # print("node_count", meta.search("node_count"))
+    print("Metadata:\n", m.meta)
 
     d = m.read_data(limit=3)
     print(d)
