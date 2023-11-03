@@ -33,88 +33,56 @@ class MMDB:
             ])
             print(f"Data section offset {self.ds_offset}\nMetadata section offset: {self.ms_offset}")
 
-        self.Type = c.BitStruct(
-            "type" / c.BitsInteger(3),
-            "len" / c.BitsInteger(5),
-            # c.Probe(lookahead=32),
+        def ext_type(this):
+            if this.type1 == 0 and this.ext_type:
+                return 7 + this.ext_type
+            return this.type1
+
+        def ext_len(this):
+            if this.len1 == 29:
+                return 29 + this.ext_len
+            if this.len1 == 30:
+                return 285 + this.ext_len
+            if this.len1 == 31:
+                return 65821 + this.ext_len
+            return this.len1
+
+        self.Ctrl = c.BitStruct(
+            "type1" / c.BitsInteger(3),
+            "len1" / c.BitsInteger(5),
+            "ext_type" / c.If(c.this.type1 == 0, c.BitsInteger(8)),  # Additional control byte
+            "ext_len" / c.Switch(c.this.len1, {
+                29: c.BitsInteger(8),
+                30: c.BitsInteger(16),
+                31: c.BitsInteger(24),
+            }),
+            "type" / c.Computed(ext_type),
+            "len" / c.Computed(ext_len),
         )
 
         self.Pointer = c.Struct(
-            "type" / self.Type * self.check_type(1),
-            "value" / c.Pointer(c.this.type.len + self.ds_offset + len(self.dss), c.LazyBound(lambda: self.DataEntry)),
+            "ctrl" / self.Ctrl * self.check_type(1),
+            "value" / c.Pointer(c.this.ctrl.len + self.ds_offset + len(self.dss), c.LazyBound(lambda: self.DataEntry)),
         )
 
-        class StrAdapter(c.Adapter):
-            def _decode(self, obj, context, path):
-                return obj.value
-
-            def _encode(self, obj, context, path):
-                return dict(type=dict(type=2, len=len(obj)), value=obj)
-
-        class IntAdapter(c.Adapter):
-            def _decode(self, obj, context, path):
-                return obj.value
-
-            def _encode(self, obj, context, path):
-                if type(obj) != int:
-                    raise c.ConstructError()
-                if obj < 256:
-                    len = 1
-                elif obj < 65536:
-                    len = 2
-                else:
-                    len = 4
-                return dict(type=dict(type=5, len=len), value=obj)
-
-        class MapAdapter(c.Adapter):
-            def _decode(self, obj, context, path):
-                return obj.value
-
-            def _encode(self, obj, context, path):
-                if type(obj) != dict:
-                    raise c.ConstructError()
-                len = len(obj)
-                return dict(type=dict(type=7, len=len), value=obj)
-
-        # self.Str = (c.Struct(
-        #     "type" / self.Type * self.check_type(2),
-        #     "value" / c.PaddedString(c.this.type.len, "utf8"),
-        # ))
-
-        self.Str = (c.Struct(
-            "type" / self.Type * self.check_type(2),
-            "value" / c.Switch(c.this.type.len, {
-                29: c.Struct(
-                    "size1" / c.BytesInteger(1),
-
-                )
-            }, default=c.PaddedString(c.this.type.len, "utf8")),
-            
-        ))
+        self.Str = c.Struct(
+            "ctrl" / self.Ctrl * self.check_type(2),
+            "value" / c.PaddedString(c.this.ctrl.len, "utf8"),
+        )
 
         self.Int = (c.Struct(
-            "type" / self.Type * self.check_type([5, 6]),
-            "value" / c.BytesInteger(c.this.type.len),
+            "ctrl" / self.Ctrl * self.check_type([5, 6, 8, 9, 10]),
+            "value" / c.BytesInteger(c.this.ctrl.len),
         ))
 
-        self.IntExt = c.Struct(
-            "type" / self.Type * self.check_type(0),
-            "subtype" / c.BytesInteger(1),
-            "full_type" / c.Computed(c.this.subtype + 7) * self.check_full_type([8, 9, 10]),
-            "value" / c.BytesInteger(c.this.type.len),
-        )
-
         self.Arr = c.Struct(
-            "type" / self.Type * self.check_type(0),
-            "subtype" / c.BytesInteger(1),
-            "full_type" / c.Computed(c.this.subtype + 7) * self.check_full_type([11]),
-            # "value" / c.Array(c.this.type.len, c.LazyBound(lambda: self.DataEntry)),
-            "value" / self.Str,
+            "ctrl" / self.Ctrl * self.check_type(11),
+            "value" / c.LazyBound(lambda: self.DataEntry),
             # c.Probe(lookahead=10)
         )
 
         self.Map = c.Struct(
-            "type" / self.Type * self.check_type([7]),
+            "ctrl" / self.Ctrl * self.check_type([7]),
             "map_key" / self.Str,
             "map_value" / c.LazyBound(lambda: self.DataEntry),
         )
@@ -122,10 +90,8 @@ class MMDB:
         self.DataEntry = c.Select(
             self.Str,
             self.Int,
-            self.IntExt,
             self.Arr,
             self.Map,
-            # c.Probe(),
         )
 
     def check_type(self, vals):
@@ -135,16 +101,11 @@ class MMDB:
                     raise c.ConstructError()
         else:
             def f(obj, _):
+                print("HERE", obj)
                 if obj.type != vals:
                     raise c.ConstructError()
         return f
         
-    def check_full_type(self, vals):
-        def f(obj, _):
-            if obj not in vals:
-                raise c.ConstructError()
-        return f
-
     def metadata(self):
         # print(self.DataEntry.parse(b"\x43abc"))
         # print(self.DataEntry.build(u"abc"))
@@ -163,9 +124,9 @@ class MMDB:
         ).parse_file(self.file)
 
     def printobj(self, obj, ctx):
-        print(obj)
-        if obj.left > 11889298:
-            raise c.CancelParsing
+        print(obj, ctx)
+        # if obj.left > 11889298:
+        #     raise c.CancelParsing
         # if ctx._index+1 >= 10:
         #     raise c.CancelParsing
 
@@ -191,7 +152,7 @@ class MMDB:
 
         )
 
-MMDB(file="/tmp/anycast_ranges_only.mmdb").tree()
+# MMDB(file="/tmp/anycast_ranges_only.mmdb").tree()
 
 # r = c.Struct(
 #     "tree" / MMDB().tree(discard=True),
