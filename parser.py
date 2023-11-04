@@ -20,17 +20,6 @@ def search_string_offset_in_file(file, strings):
     return offsets
 
 ## Auxiliary helpers
-def check_type(vals):
-    if type(vals) == list:
-        def f(obj, _):
-            if obj.type not in vals:
-                raise c.ConstructError()
-    else:
-        def f(obj, _):
-            if obj.type != vals:
-                raise c.ConstructError()
-    return f
-
 def ext_type(this):
     if this.type1 == 0 and this.ext_type:
         return 7 + this.ext_type
@@ -76,7 +65,7 @@ def Pointer(data_offset):
 
 
 Str = c.Struct(
-    "ctrl" / Ctrl, # * check_type(2),
+    "ctrl" / Ctrl,
     c.Check(c.this.ctrl.type == 2),
     "value" / c.PaddedString(c.this.ctrl.len, "utf8"),
 )
@@ -94,14 +83,14 @@ Bytes = c.Struct(
 )
 
 Int = (c.Struct(
-    "ctrl" / Ctrl, # * check_type([5, 6, 8, 9, 10]),
+    "ctrl" / Ctrl,
     c.Check(lambda this: this.ctrl.type in [5, 6, 8, 9, 10]),
     "value" / c.BytesInteger(c.this.ctrl.len),
 ))
 
 def Arr(offset):
     return c.Struct(
-        "ctrl" / Ctrl, # * check_type(11),
+        "ctrl" / Ctrl,
         c.Check(c.this.ctrl.type == 11),
         "value" / c.Array(
             c.this.ctrl.len,
@@ -175,11 +164,10 @@ class MMDB:
         self.read_metadata()
 
     def metadata(self):
-        Entry = DataEntry(self.metadata_start)
         return c.Sequence(
             c.Seek(self.metadata_start),
             c.GreedyRange(
-                Entry #* self.printobj()
+                DataEntry(self.metadata_start) #* self.printobj()
             ),
         )
 
@@ -204,7 +192,6 @@ class MMDB:
 
     def tree(self, discard=True):
         ## TODO: Implement node layout for 28 bit DB
-        ## TODO: Get record size (rs) from metadata
         Record = c.Bitwise(c.BitsInteger(self.rs))
 
         Node = c.Struct(
@@ -225,11 +212,10 @@ class MMDB:
         ])
 
     def data(self, limit=None, show=False, discard=False):
-        Entry = DataEntry(self.data_start)
         return c.Sequence(
             c.Seek(self.data_start),
             c.GreedyRange(
-                Entry * self.printobj(limit=limit, show=show),
+                DataEntry(self.data_start) * self.printobj(limit=limit, show=show),
                 discard=discard
             ),
         )
