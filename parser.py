@@ -2,6 +2,8 @@ from os import walk
 import construct as c
 import mmap
 import argparse
+import ipaddress
+import bitstring as bs
 
 """
 https://maxmind.github.io/MaxMind-DB/
@@ -96,7 +98,6 @@ def Arr(offset):
             c.this.ctrl.len,
             c.LazyBound(lambda: DataEntry(offset)),
         )
-        # c.Probe(lookahead=10)
     )
 
 Cache = c.Struct(
@@ -144,6 +145,17 @@ def DataEntry(offset):
         Pointer(offset),
     )
 
+def Record(record_size):
+    ## TODO: Implement node layout for 28 bit DB
+    return c.Bitwise(c.BitsInteger(record_size))
+
+def Node(record_size):
+    return c.Struct(
+        "left" / Record(record_size),
+        "right" / Record(record_size),
+        "offset" / c.Tell
+    )
+
 class MMDB:
     def __init__(self, file=None):
         self.dss = b"\x00"*16
@@ -175,13 +187,17 @@ class MMDB:
         self.meta = self.metadata().parse_file(self.file)
         values = self.meta.search_all("value")
         self.rs = values[values.index("record_size")+1]
-        print(f"Record size: {self.rs}")
+        self.ip_version = values[values.index("ip_version")+1]
+        self.node_size_bytes = int(self.rs * 2 / 8)
+        self.node_count = values[values.index("node_count")+1]
+        print(f"Record size: {self.rs}\nNode count: {self.node_count}\nTree size: {int(self.rs*2/8) * self.node_count} (bytes)")
+        print(f"ip_version: {self.ip_version}")
         return self.meta
 
-    def printobj(self, limit=None, show=True):
+    def printobj(self, limit=None, show=True, text=''):
         def func(obj, ctx):
             if show:
-                print(obj, ctx)
+                print(text, obj, ctx)
 
             # if obj.left > 11889298:
             #     raise c.CancelParsing
@@ -191,16 +207,7 @@ class MMDB:
         return func
 
     def tree(self, discard=True):
-        ## TODO: Implement node layout for 28 bit DB
-        Record = c.Bitwise(c.BitsInteger(self.rs))
-
-        Node = c.Struct(
-            "left" / Record,
-            "right" / Record,
-            "offset" / c.Tell
-        )
-
-        return c.GreedyRange(Node * self.printobj(), discard=discard).parse_file(self.file)
+        return c.GreedyRange(Node(self.rs) * self.printobj(), discard=discard).parse_file(self.file)
 
     def find_section_offsets(self):
         if not self.file:
@@ -223,6 +230,97 @@ class MMDB:
     def read_data(self, limit=None, show=False):
         return self.data(limit=limit, show=show).parse_file(m.file)
 
+    def lookup(self, ip):
+        i = ipaddress.ip_address(ip)
+
+        if i.version == 4 and self.ip_version == 6:
+            i = ipaddress.ip_address(f"::ffff:0:0:{ip}")
+            print(f"IPv4 address is queried in IPv6 DB. Converted to {i}")
+
+        print(i.packed)
+
+        node = Node(self.rs)
+        bits = bs.Bits(i.packed).tobitarray()
+        # bits = bs.Bits(b"\x01\x00\x00\x00")
+
+        def err(obj, ctx):
+            raise c.ConstructError(f"Could not get data for {ip}")
+
+        def check_data(obj, ctx):
+            if ctx.get("data"):
+                raise c.CancelParsing("FOUND")
+
+
+        def fin(obj, ctx):
+            print(obj, ctx)
+            raise c.CancelParsing(message="FOUND")
+
+        Data = DataEntry(self.data_start)
+
+        parsers = []
+        for b in bits:
+            if b:
+                print("right")
+                # Follow right branch
+                parsers.append(
+                    "data" / c.Struct(
+                        # c.Pass * check_data,
+                        "off_right" / c.Tell,
+                        "node" / node,
+                        # c.StopIf(c.this.node.right == self.node_count),
+                        c.If(c.this.node.right == self.node_count, c.Pass * err),
+                        # # Jump to the next node
+                        c.If(c.this.node.right < self.node_count, c.Seek(c.this.node.right * self.node_size_bytes)),
+                        "data" / c.If(c.this.node.right > self.node_count, c.Sequence(
+                            c.Seek(c.this._.node.right - self.node_count - 16 + self.data_start),
+                            "data" / Data,
+                        )),
+                        c.StopIf(c.this.node.right > self.node_count),
+                        # c.If(c.this.data, c.Pass * fin),
+                    )
+                )
+            else:
+                print("left")
+                parsers.append(
+                    "data" / c.Struct(
+                        # c.Pass * check_data,
+                        "off_left" / c.Tell,
+                        "node" / node,
+                        # c.StopIf(c.this.node.left == self.node_count),
+                        c.If(c.this.node.left == self.node_count, c.Pass * err),
+                        # Jump to the next node
+                        c.If(c.this.node.left < self.node_count, c.Seek(c.this.node.left * self.node_size_bytes)),
+                        "data" / c.If(c.this.node.left > self.node_count, c.Sequence(
+                            c.Seek(c.this._.node.left - self.node_count - 16 + self.data_start) * self.printobj(text="DATA"),
+                            Data,
+                        )),
+                        c.StopIf(c.this.node.left > self.node_count),
+                        # c.If(c.this.data, c.Pass * fin),
+                    )
+                )
+            parsers.append(
+                c.StopIf(c.this.data.data),
+                # c.StopIf(lambda this: this.data.get("data")),
+            )
+
+        Parser = c.Sequence(*parsers)
+        print(len(parsers))
+
+
+        # for b in i.packed:
+        #     for j in range(8):
+        #         index += 1
+        #         bit = (b & (1<<(7 - j))) > 0
+        #         print(index, j, bit)
+        #         # Parser = c.Sequence(Parser, c.Struct(
+        #         #     "node" / node,
+        #         # ))
+
+        res = Parser.parse_file(self.file)
+        print(res)
+        print(res[-1])
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('file', nargs='?')
@@ -231,7 +329,12 @@ if __name__ == "__main__":
 
     m = MMDB(file=args.file)
 
-    print("Metadata:\n", m.meta)
+    # m.tree()
 
-    d = m.read_data(limit=3)
-    print(d)
+    # print("Metadata:\n", m.meta)
+
+    # d = m.read_data(limit=3)
+    # print(d)
+
+    # m.lookup('8.8.8.8')
+    m.lookup('1.0.0.0')
