@@ -150,13 +150,23 @@ def Record(record_size):
     return c.Bitwise(c.BitsInteger(record_size))
 
 def Node(record_size):
-    return c.Struct(
-        c.Probe(lookahead=10),
-        "left" / Record(record_size),
-        "right" / Record(record_size),
-        "offset" / c.Tell
-    )
+    if record_size in [24, 32]:
+        return c.Struct(
+            "left" / Record(record_size),
+            "right" / Record(record_size),
+            "offset" / c.Tell,
+        )
 
+    if record_size == 28:
+        return c.BitStruct(
+            "left1" / c.BitsInteger(24),
+            "left2" / c.BitsInteger(4),
+            "right2" / c.BitsInteger(4),
+            "right1" / c.BitsInteger(24),
+            "left" / c.Computed(c.this.left1 + (c.this.left2 << 24)),
+            "right" / c.Computed(c.this.right1 + (c.this.right2 << 24)),
+            "offset" / c.Tell,
+        )
 class MMDB:
     def __init__(self, file=None):
         self.dss = b"\x00"*16
@@ -236,7 +246,6 @@ class MMDB:
         i = ipaddress.ip_address(ip)
 
         if i.version == 4 and self.ip_version == 6:
-            # i = ipaddress.ip_address(f"::ffff:0:0:{ip}")
             i = ipaddress.ip_address(f"::0:0:{ip}")
             print(f"IPv4 address {ip} is queried in IPv6 DB. Converted to {i}")
 
@@ -274,39 +283,46 @@ class MMDB:
                 )
             )
 
-            # Stops Sequence() if we have reached data record
-            # StopIf needs to be outside of Struct to stop the parsing completely
+            # Stops Sequence() if we have reached data record.
+            # StopIf needs to be outside of Struct to stop the parsing completely,
+            # but keep the result.
             parsers.append(
-                # c.StopIf(c.this.data.data),
                 c.StopIf(lambda this: this.data.get("data")),
             )
 
         Parser = c.Sequence(*parsers)
 
         res = Parser.parse_file(self.file)
+
         # print(res)
-        if res:
-            # print(len(res))
-            print(res[-1].data[1].value)
+        # if res:
+        #     # print(len(res))
+        #     print(res[-1].data[1].value)
+
+        return res
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('file', nargs='?')
+    parser.add_argument('-m', '--meta', action='store_true', help='Print metadata section tree')
+    parser.add_argument('-d', '--data', type=int, help='Dump first DATA data records')
+    parser.add_argument('-l', '--lookup', type=str, dest='ip')
     args = parser.parse_args()
     print(args)
 
     m = MMDB(file=args.file)
 
-    m.tree()
+    if args.meta:
+        print("Metadata:\n", m.meta)
 
-    # print("Metadata:\n", m.meta)
+    if args.data:
+        d = m.read_data(limit=args.data)
+        print(f"Data (first {args.data} records):\n", d)
 
-    # d = m.read_data(limit=3)
-    # print(d)
-
-    # m.lookup('8.8.8.8')
-    # m.lookup('1.0.0.0')
-    # m.lookup('2.0.0.0')
-    # m.lookup('5.42.67.88')
-    # m.lookup('5.42.67.90')
+    if args.ip:
+        res = m.lookup(args.ip)
+        if res:
+            print(res[-1].data[1].value)
+        else:
+            print(f"No data found for {args.ip}")
