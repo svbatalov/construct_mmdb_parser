@@ -241,84 +241,54 @@ class MMDB:
 
         node = Node(self.rs)
         bits = bs.Bits(i.packed).tobitarray()
-        # bits = bs.Bits(b"\x01\x00\x00\x00")
-
-        def err(obj, ctx):
-            raise c.ConstructError(f"Could not get data for {ip}")
-
-        def check_data(obj, ctx):
-            if ctx.get("data"):
-                raise c.CancelParsing("FOUND")
-
 
         def fin(obj, ctx):
-            print(obj, ctx)
+            print("FIN", obj, ctx)
             raise c.CancelParsing(message="FOUND")
 
         Data = DataEntry(self.data_start)
 
         parsers = []
         for b in bits:
-            if b:
-                print("right")
-                # Follow right branch
-                parsers.append(
-                    "data" / c.Struct(
-                        # c.Pass * check_data,
-                        "off_right" / c.Tell,
-                        "node" / node,
-                        # c.StopIf(c.this.node.right == self.node_count),
-                        c.If(c.this.node.right == self.node_count, c.Pass * err),
-                        # # Jump to the next node
-                        c.If(c.this.node.right < self.node_count, c.Seek(c.this.node.right * self.node_size_bytes)),
-                        "data" / c.If(c.this.node.right > self.node_count, c.Sequence(
-                            c.Seek(c.this._.node.right - self.node_count - 16 + self.data_start),
-                            "data" / Data,
-                        )),
-                        c.StopIf(c.this.node.right > self.node_count),
-                        # c.If(c.this.data, c.Pass * fin),
-                    )
-                )
-            else:
-                print("left")
-                parsers.append(
-                    "data" / c.Struct(
-                        # c.Pass * check_data,
-                        "off_left" / c.Tell,
-                        "node" / node,
-                        # c.StopIf(c.this.node.left == self.node_count),
-                        c.If(c.this.node.left == self.node_count, c.Pass * err),
-                        # Jump to the next node
-                        c.If(c.this.node.left < self.node_count, c.Seek(c.this.node.left * self.node_size_bytes)),
-                        "data" / c.If(c.this.node.left > self.node_count, c.Sequence(
-                            c.Seek(c.this._.node.left - self.node_count - 16 + self.data_start) * self.printobj(text="DATA"),
-                            Data,
-                        )),
-                        c.StopIf(c.this.node.left > self.node_count),
-                        # c.If(c.this.data, c.Pass * fin),
-                    )
-                )
+            which = "right" if b else "left"
+
             parsers.append(
-                c.StopIf(c.this.data.data),
-                # c.StopIf(lambda this: this.data.get("data")),
+                "data" / c.Struct(
+                    "off" / c.Tell,
+                    "node" / node,
+                    # No data
+                    # c.StopIf(c.this.node[which] == self.node_count),
+                    # c.If(c.this.node[which] == self.node_count, c.Pass * err),
+                    c.If(c.this.node[which] == self.node_count, c.Pass * fin),
+
+                    # Jump to the next node
+                    c.If(c.this.node[which] < self.node_count, c.Seek(c.this.node[which] * self.node_size_bytes)),
+
+                    # Jump to data entry and parse it
+                    "data" / c.If(c.this.node[which] > self.node_count, c.Sequence(
+                        c.Seek(c.this._.node[which] - self.node_count - 16 + self.data_start),
+                        Data,
+                    )),
+
+                )
+            )
+
+            # Stops Sequence() if we have reached data record
+            # StopIf needs to be outside of Struct to stop the parsing completely
+            parsers.append(
+                # c.StopIf(c.this.data.data),
+                c.StopIf(lambda this: this.data.get("data")),
             )
 
         Parser = c.Sequence(*parsers)
         print(len(parsers))
 
 
-        # for b in i.packed:
-        #     for j in range(8):
-        #         index += 1
-        #         bit = (b & (1<<(7 - j))) > 0
-        #         print(index, j, bit)
-        #         # Parser = c.Sequence(Parser, c.Struct(
-        #         #     "node" / node,
-        #         # ))
-
         res = Parser.parse_file(self.file)
         print(res)
-        print(res[-1])
+        if res:
+            print(len(res))
+            print(res[-1])
 
 
 if __name__ == "__main__":
@@ -338,3 +308,6 @@ if __name__ == "__main__":
 
     # m.lookup('8.8.8.8')
     m.lookup('1.0.0.0')
+    # m.lookup('2.0.0.0')
+    # m.lookup('5.42.67.88')
+    # m.lookup('5.42.67.90')
