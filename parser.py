@@ -1,4 +1,3 @@
-from os import walk
 import construct as c
 import mmap
 import argparse
