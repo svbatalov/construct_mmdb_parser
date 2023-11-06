@@ -145,15 +145,11 @@ def DataEntry(offset):
         Pointer(offset),
     )
 
-def Record(record_size):
-    ## TODO: Implement node layout for 28 bit DB
-    return c.Bitwise(c.BitsInteger(record_size))
-
 def Node(record_size):
     if record_size in [24, 32]:
-        return c.Struct(
-            "left" / Record(record_size),
-            "right" / Record(record_size),
+        return c.BitStruct(
+            "left" / c.BitsInteger(record_size),
+            "right" / c.BitsInteger(record_size),
             "offset" / c.Tell,
         )
 
@@ -167,6 +163,8 @@ def Node(record_size):
             "right" / c.Computed(c.this.right1 + (c.this.right2 << 24)),
             "offset" / c.Tell,
         )
+
+    raise BaseException(f"Record size {record_size} is not implemented.")
 class MMDB:
     def __init__(self, file=None):
         self.dss = b"\x00"*16
