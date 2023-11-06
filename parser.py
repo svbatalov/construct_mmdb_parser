@@ -151,6 +151,7 @@ def Record(record_size):
 
 def Node(record_size):
     return c.Struct(
+        c.Probe(lookahead=10),
         "left" / Record(record_size),
         "right" / Record(record_size),
         "offset" / c.Tell
@@ -192,6 +193,7 @@ class MMDB:
         self.node_count = values[values.index("node_count")+1]
         print(f"Record size: {self.rs}\nNode count: {self.node_count}\nTree size: {int(self.rs*2/8) * self.node_count} (bytes)")
         print(f"ip_version: {self.ip_version}")
+        print(f"First data record at {self.node_count + 16} pointer")
         return self.meta
 
     def printobj(self, limit=None, show=True, text=''):
@@ -207,7 +209,7 @@ class MMDB:
         return func
 
     def tree(self, discard=True):
-        return c.GreedyRange(Node(self.rs) * self.printobj(), discard=discard).parse_file(self.file)
+        return c.GreedyRange(Node(self.rs) * self.printobj(), discard=discard).compile().parse_file(self.file)
 
     def find_section_offsets(self):
         if not self.file:
@@ -234,16 +236,17 @@ class MMDB:
         i = ipaddress.ip_address(ip)
 
         if i.version == 4 and self.ip_version == 6:
-            i = ipaddress.ip_address(f"::ffff:0:0:{ip}")
-            print(f"IPv4 address is queried in IPv6 DB. Converted to {i}")
+            # i = ipaddress.ip_address(f"::ffff:0:0:{ip}")
+            i = ipaddress.ip_address(f"::0:0:{ip}")
+            print(f"IPv4 address {ip} is queried in IPv6 DB. Converted to {i}")
 
-        print(i.packed)
+        print("IP in binary form:", i.packed)
 
         node = Node(self.rs)
         bits = bs.Bits(i.packed).tobitarray()
 
         def fin(obj, ctx):
-            print("FIN", obj, ctx)
+            # print("FIN", obj, ctx)
             raise c.CancelParsing(message="FOUND")
 
         Data = DataEntry(self.data_start)
@@ -254,11 +257,9 @@ class MMDB:
 
             parsers.append(
                 "data" / c.Struct(
-                    "off" / c.Tell,
+                    "offset" / c.Tell,
                     "node" / node,
                     # No data
-                    # c.StopIf(c.this.node[which] == self.node_count),
-                    # c.If(c.this.node[which] == self.node_count, c.Pass * err),
                     c.If(c.this.node[which] == self.node_count, c.Pass * fin),
 
                     # Jump to the next node
@@ -281,14 +282,12 @@ class MMDB:
             )
 
         Parser = c.Sequence(*parsers)
-        print(len(parsers))
-
 
         res = Parser.parse_file(self.file)
-        print(res)
+        # print(res)
         if res:
-            print(len(res))
-            print(res[-1])
+            # print(len(res))
+            print(res[-1].data[1].value)
 
 
 if __name__ == "__main__":
@@ -299,7 +298,7 @@ if __name__ == "__main__":
 
     m = MMDB(file=args.file)
 
-    # m.tree()
+    m.tree()
 
     # print("Metadata:\n", m.meta)
 
@@ -307,7 +306,7 @@ if __name__ == "__main__":
     # print(d)
 
     # m.lookup('8.8.8.8')
-    m.lookup('1.0.0.0')
+    # m.lookup('1.0.0.0')
     # m.lookup('2.0.0.0')
     # m.lookup('5.42.67.88')
     # m.lookup('5.42.67.90')
