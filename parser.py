@@ -210,9 +210,6 @@ class MMDB:
             if show:
                 print(text, obj, ctx)
 
-            # if obj.left > 11889298:
-            #     raise c.CancelParsing
-
             if limit and ctx and ctx._index and ctx._index >= limit:
                 raise c.CancelParsing
         return func
@@ -254,8 +251,7 @@ class MMDB:
         bits = bs.Bits(i.packed).tobitarray()
 
         def fin(obj, ctx):
-            # print("FIN", obj, ctx)
-            raise c.CancelParsing(message="FOUND")
+            raise c.CancelParsing()
 
         Data = DataEntry(self.data_start)
 
@@ -283,8 +279,7 @@ class MMDB:
             )
 
             # Stops Sequence() if we have reached data record.
-            # StopIf needs to be outside of Struct to stop the parsing completely,
-            # but keep the result.
+            # StopIf needs to be outside of Struct to stop the parsing completely, but keep the result.
             parsers.append(
                 c.StopIf(lambda this: this.data.get("data")),
             )
@@ -292,11 +287,6 @@ class MMDB:
         Parser = c.Sequence(*parsers)
 
         res = Parser.parse_file(self.file)
-
-        # print(res)
-        # if res:
-        #     # print(len(res))
-        #     print(res[-1].data[1].value)
 
         return res
 
