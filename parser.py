@@ -145,6 +145,7 @@ def DataEntry(offset):
         Pointer(offset),
     )
 
+## Tree node parser
 def Node(record_size):
     if record_size in [24, 32]:
         return c.BitStruct(
@@ -165,6 +166,7 @@ def Node(record_size):
         )
 
     raise BaseException(f"Record size {record_size} is not implemented.")
+
 class MMDB:
     def __init__(self, file=None):
         self.dss = b"\x00"*16
@@ -224,8 +226,8 @@ class MMDB:
             raise FileNotFoundError
 
         self.ds_offset, self.ms_offset = search_string_offset_in_file(self.file, [
-            b"\x00"*16,
-            b"\xab\xcd\xefMaxMind.com"
+            self.dss,
+            self.mss,
         ])
 
     def data(self, limit=None, show=False, discard=False):
